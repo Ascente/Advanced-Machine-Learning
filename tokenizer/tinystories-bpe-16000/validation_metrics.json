@@ -1,0 +1,12 @@
+{
+  "split": "validation",
+  "documents": 21990,
+  "vocab_size": 16000,
+  "utf8_bytes": 19218350,
+  "unicode_characters": 19190318,
+  "tokens": 4633494,
+  "bytes_per_token": 4.147701496969673,
+  "characters_per_token": 4.141651634813814,
+  "roundtrip_passed": 21990,
+  "elapsed_seconds": 21.23140947520733
+}

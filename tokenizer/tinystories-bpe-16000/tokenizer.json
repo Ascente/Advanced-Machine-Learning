@@ -1,0 +1,39 @@
+{
+  "pattern": "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+",
+  "vocab_size": 16000,
+  "training_stats": {
+    "documents": 2119719,
+    "utf8_bytes": 1902941607,
+    "unique_pretokens": 76025,
+    "pretoken_occurrences": 459958357,
+    "requested_vocab_size": 16000,
+    "actual_vocab_size": 16000,
+    "num_merges": 15744,
+    "min_frequency": 2,
+    "dataset": "roneneldan/TinyStories",
+    "split": "train",
+    "corpus_scope": "full_train_split",
+    "data_files": [
+      {
+        "path": "data/train-00000-of-00004-2d5a1467fff1081b.parquet",
+        "num_rows": 529930
+      },
+      {
+        "path": "data/train-00001-of-00004-5852b56a2bd28fd9.parquet",
+        "num_rows": 529930
+      },
+      {
+        "path": "data/train-00002-of-00004-a26307300439e943.parquet",
+        "num_rows": 529930
+      },
+      {
+        "path": "data/train-00003-of-00004-d243063613e5a057.parquet",
+        "num_rows": 529929
+      }
+    ],
+    "expected_documents": 2119719,
+    "data_dir": "/user-data/chaojh26/TinyStories",
+    "created_at_utc": "2026-11-07T10:14:19.927768+00:00",
+    "elapsed_seconds": 298.928
+  }
+}
