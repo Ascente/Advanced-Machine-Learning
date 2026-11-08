@@ -4,7 +4,7 @@
 
 ## 模型配置
 
-`ModelConfig` 的默认尺寸采用 `homework/aml-hw1.pdf` 的参考配置：
+`ModelConfig` 的默认尺寸采用 `assignment/aml-hw1.pdf` 的参考配置：
 
 | 配置 | 值 |
 |---|---:|

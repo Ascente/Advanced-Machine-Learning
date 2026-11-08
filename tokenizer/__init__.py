@@ -1,4 +1,4 @@
-"""Homework byte-level BPE, implemented without an external tokenizer trainer."""
+"""byte-level BPE, implemented without an external tokenizer trainer."""
 
 from .bpe import BPETokenizer
 
