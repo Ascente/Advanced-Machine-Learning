@@ -9,6 +9,6 @@ python train.py \
     --vocab-size 16000 \
     --min-frequency 2
 
-python inference.py \
+python infer.py \
     --model-dir tinystories-bpe-16000 \
     --text "Once upon a time, a little cat found a red ball."

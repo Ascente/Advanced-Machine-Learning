@@ -1,0 +1,43 @@
+{
+  "dataset": "tinystories",
+  "data_dir": "/user-data/chaojh26/TinyStories",
+  "data_files": [
+    {
+      "path": "data/train-00000-of-00004-2d5a1467fff1081b.parquet",
+      "num_rows": 529930
+    },
+    {
+      "path": "data/train-00001-of-00004-5852b56a2bd28fd9.parquet",
+      "num_rows": 529930
+    },
+    {
+      "path": "data/train-00002-of-00004-a26307300439e943.parquet",
+      "num_rows": 529930
+    },
+    {
+      "path": "data/train-00003-of-00004-d243063613e5a057.parquet",
+      "num_rows": 529929
+    }
+  ],
+  "split": "train",
+  "split_policy": {
+    "method": "official"
+  },
+  "tokenizer": {
+    "source": "tinystories-bpe-16000",
+    "vocab_size": 16000
+  },
+  "expected_documents": 2119719,
+  "documents": 2119719,
+  "utf8_bytes": 1902941607,
+  "unicode_characters": 1899973203,
+  "tokens": 461011764,
+  "bytes_per_token": 4.127750646727531,
+  "characters_per_token": 4.12131175680801,
+  "matched_documents": 2119719,
+  "mismatched_documents": 0,
+  "match_rate": 1.0,
+  "normalized_matched_documents": 2119719,
+  "elapsed_seconds": 2101.126778677106,
+  "created_at_utc": "2026-11-08T06:33:07.025333+00:00"
+}
