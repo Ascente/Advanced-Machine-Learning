@@ -130,177 +130,97 @@ print(tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True))
 生成时自动切换到评估模式，并在结束后恢复原来的模式。
 每步只使用最近 `context_length` 个 token，从位置 0 重新计算，不使用 KV cache。
 
-## Part 3：FineWeb 预训练
+## Part 3：TinyStories 预训练
 
-新增文件：
+`run.sh` 默认使用 TinyStories、参考分词器 `flexitok/bpe_fw_edu_16000`、2 张 GPU（2、3）、
+每卡 batch 16、梯度累积 4、长度 1024，训练 1 个 epoch。
+模型、AdamW、学习率计划和文档内因果注意力沿用前面的配置。
 
-| 文件 | 作用 |
-|---|---|
-| `prepare.py` | 随机划分 FineWeb，用参考分词器编码并记录原始字节数 |
-| `data.py` | 内存映射读取 token，构造等长输入、目标及文档编号 |
-| `train.py` | 单卡或 DDP 多卡训练、验证、checkpoint、W&B 和 tqdm |
-| `evaluate.py` | 对完整训练集或验证集计算 loss、PPL、BPB |
-| `infer.py` | 从 checkpoint 加载模型和分词器，生成文本 |
-| `plot.py` | 从本地日志绘制 loss、PPL、BPB 曲线 |
-| `run.sh` | 数据准备后执行 2 卡主模型训练，显式列出参数 |
+### 数据与验证
 
-以下命令均在项目根目录执行。当前服务器已安装所需的 PyTorch、NumPy、
-PyArrow、tokenizers、tqdm、wandb 和 matplotlib。
+`prepare.py` 使用 TinyStories 的官方 train / validation 文件，不重新随机划分。
+本机训练集 2,119,719 篇，验证集 21,990 篇，均完整编码。
+数据目录为 `/user-data/chaojh26/TinyStories/`，编码目录为该目录下的 `packed-1024/`。
+每篇文档保存为 `BOS + 正文 + EOS`，连续打包后按块随机打乱训练，块内 token 顺序保持不变。
+注意力只关注本篇文档中当前位置及之前的 token；BOS 和 PAD 目标忽略，正文与 EOS 计入 loss。
+每块保存原始 UTF-8 字节数，供 BPB 计算使用。训练块末尾不足一个全局 batch 的余量舍去。
 
-### 数据准备
+训练前、每 100 步、最后一步均遍历**完整验证集**，没有验证子集或采样上限。
+各 GPU 处理互不重复的验证块，汇总负对数似然、有效 token 数与原文字节数，计算 loss、PPL、BPB。
+`best.pt` 按完整验证集 loss 选择。结束后再次加载最佳 checkpoint，生成最终指标、样例和曲线。
+训练 loss 曲线来自实际训练 batch。
 
 ```bash
 python -m pretrain.prepare \
-    --data-dir /user-data/chaojh26/FineWeb-Edu/sample-10BT \
-    --output-dir /user-data/chaojh26/FineWeb-Edu/packed-1024 \
+    --dataset tinystories \
+    --data-dir /user-data/chaojh26/TinyStories \
+    --output-dir /user-data/chaojh26/TinyStories/packed-1024 \
     --tokenizer flexitok/bpe_fw_edu_16000 \
-    --context-length 1024 \
-    --seed 42 \
-    --batch-size 1024
+    --context-length 1024 --batch-size 1024
 ```
 
-按文件名和行序编号，使用与 `tokenizer/corpus.py` 相同的随机规则：
-`random.Random(seed).sample(range(total), total // 100)` 抽取验证文档，其余为训练文档。
-本机文档数为训练 9,575,380、验证 96,721。先划分文档，再分别拼接，两个 split 不混合。
+编码产物为 `train.bin`、`validation.bin`、对应的 `*.bytes.bin`、`metadata.json` 和 `tokenizer.json`。
+脚本发现完整编码的 `metadata.json` 后跳过准备数据。准备过程不支持中途续写，未完成时需改用空目录。
+`prepare.py` 仍支持 `--dataset fineweb`，此时需显式指定 FineWeb 原始目录和独立输出目录，按 seed 随机划分 99:1。
 
-采用论文 [Analysing The Impact of Sequence Composition on Language Model Pre-Training](https://aclanthology.org/2024.acl-long.427/)
-中的文档隔离思路：仍将文档紧凑打包，但注意力只在文档内部计算。
-本实现用显式布尔 mask 隔离文档；论文中的 FlashAttention 变长内核未引入，论文的效率数字不适用于本实现。
-文档顺序沿用本地 Parquet 顺序，不进行 BM25 相关文档检索排序。
+### 启动与日志
 
-每篇文档按 `BOS + 正文 + EOS` 编码，使用参考分词器的 `<s>` 和 `</s>`。
-网页中直接出现的 `<s>`、`</s>`、`<pad>` 等字符串按普通文本编码。
-每个 split 写一个连续的 uint16 token 文件，在训练时以 1024 个目标 token 为一个块读取；
-输入与目标错开一个位置，相邻块共享一个上下文 token，目标不重复。
-根据输入中的 BOS 构造文档编号，只有编号相同且不晚于当前位置的 token 可以互相注意。
-BOS 为本篇首个正文 token 提供起始上下文；正文和 EOS 参与 loss，目标中的 BOS 与 PAD 忽略。
-这样不会训练“从上一篇文档的 EOS 预测下一篇的 BOS”这一跨文档目标。
-最后一个不足长度的块在读取时右侧填 PAD。一篇长文档可以跨块，每个块独立计算。
-
-输出：`train.bin`、`validation.bin`、对应的 `*.bytes.bin`、`tokenizer.json`、`metadata.json`。
-`*.bytes.bin` 每个块仅存一个原始 UTF-8 字节数，而非逐 token 保存一份字节数组。
-依据编码 offsets 对原文分段计数，重复字节 token 的字符只计一次，并保留 NFC 归一化前的原文字节数。
-每个 split 的首 token 是仅作为上下文的 BOS，所有正文 token 均参与计分。
-BOS、EOS 和 PAD 不增加字节数，BPB 分母包含完整的原始文本字节数。
-BPB 为 `总负对数似然 / (ln(2) × 被计分文本的原始 UTF-8 字节数)`。
-
-数据准备会遍历完整数据集，需要单独等待完成，只需执行一次。
-它要求空输出目录，不支持从中断的编码进度续写；中断后可换一个空目录重跑。
-训练阶段支持 checkpoint 恢复。更改上下文长度或数据划分 seed 后应准备新的数据目录。
-旧的无 BOS 编码数据不能直接用于此训练流程，需要使用空输出目录重新编码。
-
-### 训练配置与启动
-
-主配置沿用第二部分的模型，独立输出头使总参数量为 234,128,384。
-优化器 AdamW，`betas=(0.9, 0.95)`、`eps=1e-8`；二维权重使用 weight decay 0.1，
-RMSNorm 缩放权重不衰减。学习率峰值 4e-4，前 2% 更新线性 warmup，
-之后余弦衰减至 4e-5；梯度范数裁剪为 1.0，默认 BF16 混合精度。
-
-2 卡配置每次更新处理 `2 卡 × 每卡 16 条 × 累积 4 次 × 1024 = 131,072` 个目标位置。
-其中 BOS 和 PAD 位置不计入有效 token 数，日志中的 `tokens_seen` 为实际参与 loss 的正文与 EOS 数。
-`--batch-size` 是每卡每次前向的序列数，`--gradient-accumulation` 是一次优化器更新累积的次数。
-以实际未被忽略的目标数归一化梯度，多卡 DDP 只在最后一次累积时同步梯度。
-默认遍历 1 个 epoch；每个 epoch 随机打乱训练块，舍去不足一个全局有效 batch 的余量。
-`--max-steps` 可限制总更新次数，学习率计划也使用这个实际总步数。
-
-先配置自己的 W&B 登录凭据：
+当前环境的 `wandb==0.30.0` 搭配已验证可访问的官方公共入口：
 
 ```bash
 export WANDB_BASE_URL=https://forge.coreweave.com/api/wandb
 export WANDB_APP_URL=https://forge.coreweave.com/wandb
 wandb login --host "$WANDB_BASE_URL" --verify
-
-# 若数据尚未编码则先准备数据，再执行 2 卡训练
-bash pretrain/run.sh
 ```
 
-`run.sh` 默认使用 2 张 GPU，使用 `https://forge.coreweave.com/api/wandb` 访问 W&B 公共平台，
-网页入口为 `https://forge.coreweave.com/wandb`。
-当前服务器通过代理访问 API 子域名返回 403，而这个官方入口正常。
-本环境使用已验证的 `wandb==0.30.0`；0.31.0 会将该入口改写为当前无法访问的 API 子域名。
-API Key 从 [官方授权页](https://forge.coreweave.com/wandb/authorize) 获取，在终端登录时输入，
-完整保留 `wandb_v1_` 前缀，不写入脚本。
-已有编码数据的 `metadata.json` 时自动跳过数据准备。
-在线模式会在创建多卡进程组之前检查 W&B 登录；未登录时直接报错，不在训练中等待输入。
-请先按上面的命令登录公共平台，确保登录和训练使用同一个服务地址。
-团队项目可增加 `--wandb-entity 团队名称`。
-`--wandb-mode offline` 仅保存本地 W&B 数据，之后使用 `wandb sync 离线运行目录` 上传；
-`--wandb-mode disabled` 关闭 W&B，仍保存本地指标并显示 tqdm。
-只由 rank 0 记录 W&B 和本地文件，所有 rank 参与训练及验证。
+Key 从 [官方授权页](https://forge.coreweave.com/wandb/authorize) 获取，完整保留 `wandb_v1_` 前缀。
+`run.sh` 已设置上述服务地址；项目为 `aml-hw1`，运行名为 `20261113-tinystories-1`。
+在线模式在初始化多卡进程组前检查登录。可用 `--wandb-mode offline` 仅记录本地 W&B 数据，
+或 `--wandb-mode disabled` 关闭 W&B；tqdm、本地指标和 checkpoint 仍会保存。
 
-单卡示例，保持同样的有效 batch：
+在项目根目录启动，并将输出连接到文件、脱离原终端会话：
 
 ```bash
-python -m pretrain.train \
-    --data-dir /user-data/chaojh26/FineWeb-Edu/packed-1024 \
-    --output-dir /user-data/chaojh26/pretrain/fineweb-234m-single \
-    --batch-size 16 --gradient-accumulation 8 \
-    --epochs 1 --precision bf16 \
-    --wandb-mode online --wandb-project aml-hw1
+nohup setsid bash pretrain/run.sh > pretrain/train-tinystories.log 2>&1 < /dev/null &
+tail -f pretrain/train-tinystories.log
 ```
 
-tqdm 显示优化器更新进度、loss、学习率和已训练 token 数，验证也有独立进度条。
-每 10 次更新记录训练指标；每 250 次更新在固定的前 100 个全局验证 batch 上评估，
-并生成三个提示词的样例。`--sample-tokens 0` 可关闭训练期间生成。
-周期验证是固定子集，用于选择最佳 checkpoint，不应当作完整验证集结果。
-训练结束后加载 `best.pt`，遍历全部验证块，输出最终指标、生成样例及本地曲线。
-交叉熵按有效 token 数加权，PPL 为 `exp(loss)`，BPB 使用同一批被计分目标对应的原文字节数。
+仅执行 `bg/disown` 不会把已有输出改为文件，关闭原终端可能使日志刷新失败。
+日志中的 step 是优化器更新次数；131,072 为每步处理的目标位置数，实际有效 token 数排除 BOS 与 PAD。
 
-### 输出与恢复
+### 训练产物与单独使用
 
-默认训练目录为 `/user-data/chaojh26/pretrain/fineweb-234m/`：
+默认脚本输出目录：`/user-data/chaojh26/pretrain/runs/20261113-tinystories-1/`。
 
 | 文件 | 内容 |
 |---|---|
-| `config.json` | 模型、数据和训练配置，实际参数量与有效 batch |
-| `metrics.jsonl` | 训练与验证的 loss、PPL、BPB、token 数、步数、耗时等 |
-| `last.pt` | 最近一次保存的模型、优化器、进度及各 rank 的随机状态 |
-| `best.pt` | 固定验证子集上 loss 最小的 checkpoint |
-| `samples.jsonl` | 周期验证时的生成样例 |
-| `final_metrics.json` | 最佳 checkpoint 在完整验证集上的指标 |
-| `final_samples.json` | 最佳 checkpoint 的生成样例 |
-| `curves.png`、`curves.pdf` | 训练与验证的 loss、PPL、BPB 曲线 |
-| `wandb/` | W&B 本地运行记录（启用 W&B 时） |
+| `config.json` | 模型、数据、训练配置与实际参数量 |
+| `metrics.jsonl` | 训练和完整验证的 loss、PPL、BPB、步数、token 数、耗时等 |
+| `last.pt` | 最近保存的模型、优化器、进度和各卡随机状态 |
+| `best.pt` | 完整验证集 loss 最低的 checkpoint |
+| `samples.jsonl` | 周期生成的样例 |
+| `final_metrics.json`、`final_samples.json` | 最佳 checkpoint 的最终指标与生成样例 |
+| `curves.png`、`curves.pdf` | 本地指标曲线 |
+| `wandb/` | W&B 本地记录 |
 
-`last.pt` 在验证时、每 1000 次更新时及最后一次更新后保存，使用临时文件替换。
-`best.pt` 保留最优模型；`last.pt` 保留训练结束时的模型，即使它不是最优模型。
-checkpoint 同时保存分词器 JSON，后续生成不需要再次联网下载。
-日志还记录近似 `6 × 实际总参数量 × 已训练 token 数` FLOPs，供后续实验分析。
-训练曲线使用实际训练 batch 的指标，不额外遍历整个训练集；最终完整验证结果单独标注。
-
-恢复时使用原训练命令，加上 `--resume`，保持 GPU 数、batch、累积次数、模型和优化配置一致：
-
-```bash
-torchrun --standalone --nproc_per_node=2 -m pretrain.train \
-    --data-dir /user-data/chaojh26/FineWeb-Edu/packed-1024 \
-    --output-dir /user-data/chaojh26/pretrain/fineweb-234m \
-    --resume /user-data/chaojh26/pretrain/fineweb-234m/last.pt \
-    --batch-size 16 --gradient-accumulation 4 \
-    --epochs 1 --precision bf16 \
-    --wandb-mode online --wandb-project aml-hw1
-```
-
-恢复读取同一输出目录中的 checkpoint，按已完成更新数恢复 epoch 内的数据位置，
-并恢复优化器、学习率进度和随机状态。在线 W&B 复用保存的 run ID。
-恢复会删除本地指标中晚于该 checkpoint 的记录，避免重复的未来曲线。
-
-### 独立评估、生成与绘图
+验证后、每 1000 步及最后一步保存 `last.pt`，临时文件写完后替换；最优模型另存为 `best.pt`。
+checkpoint 包含分词器 JSON，后续生成不需联网下载分词器。
+恢复可使用原训练命令加 `--resume /路径/last.pt`，保持数据、模型、GPU 数、batch、累积和优化配置一致。
+`run.sh` 使用固定参数，不转发额外参数。
 
 ```bash
 python -m pretrain.evaluate \
-    --checkpoint /user-data/chaojh26/pretrain/fineweb-234m/best.pt \
-    --split validation \
-    --output-dir /user-data/chaojh26/pretrain/fineweb-234m/evaluation
+    --checkpoint /user-data/chaojh26/pretrain/runs/20261113-tinystories-1/best.pt \
+    --split validation --output-dir /user-data/chaojh26/pretrain/runs/20261113-tinystories-1/evaluation
 
 python -m pretrain.infer \
-    --checkpoint /user-data/chaojh26/pretrain/fineweb-234m/best.pt \
-    --prompt "The solar system consists of" \
-    --max-new-tokens 100 --temperature 0.8 --top-k 50
+    --checkpoint /user-data/chaojh26/pretrain/runs/20261113-tinystories-1/best.pt \
+    --prompt "Once upon a time" --max-new-tokens 100 --temperature 0.8 --top-k 50
 
 python -m pretrain.plot \
-    --metrics /user-data/chaojh26/pretrain/fineweb-234m/metrics.jsonl \
-    --output-dir /user-data/chaojh26/pretrain/fineweb-234m
+    --metrics /user-data/chaojh26/pretrain/runs/20261113-tinystories-1/metrics.jsonl \
+    --output-dir /user-data/chaojh26/pretrain/runs/20261113-tinystories-1
 ```
 
-独立评估始终遍历整个所选 split，`--split train` 可评估完整训练集。
-以上训练代码使用显式注意力实现；显存不足时可以减小每卡 batch，并相应增加梯度累积次数。
+文档隔离参考 [Analysing The Impact of Sequence Composition on Language Model Pre-Training](https://aclanthology.org/2024.acl-long.427/)。
+当前使用显式掩码实现，没有使用论文中的变长 FlashAttention 内核，论文的效率数字不适用于这里。

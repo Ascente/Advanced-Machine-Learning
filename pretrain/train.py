@@ -1,4 +1,4 @@
-"""FineWeb pretraining with AdamW, accumulation, optional DDP, tqdm and W&B."""
+"""Language model pretraining with full validation, DDP, tqdm and W&B."""
 
 import argparse
 from contextlib import nullcontext
@@ -61,8 +61,8 @@ def save_checkpoint(path, model, optimizer, state, device, is_best=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("/user-data/chaojh26/FineWeb-Edu/packed-1024"))
-    parser.add_argument("--output-dir", type=Path, default=Path("/user-data/chaojh26/pretrain/fineweb-234m"))
+    parser.add_argument("--data-dir", type=Path, default=Path("/user-data/chaojh26/TinyStories/packed-1024"))
+    parser.add_argument("--output-dir", type=Path, default=Path("/user-data/chaojh26/pretrain/tinystories-234m"))
     parser.add_argument("--d-model", type=int, default=1024)
     parser.add_argument("--n-layers", type=int, default=16)
     parser.add_argument("--n-heads", type=int, default=16)
@@ -76,8 +76,7 @@ def parse_args():
     parser.add_argument("--warmup-ratio", type=float, default=0.02)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--eval-every", type=int, default=250)
-    parser.add_argument("--eval-batches", type=int, default=100, help="Fixed global subset for periodic validation")
+    parser.add_argument("--eval-every", type=int, default=100)
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--sample-tokens", type=int, default=100)
@@ -88,9 +87,9 @@ def parse_args():
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="disabled")
     parser.add_argument("--wandb-project", default="aml-hw1")
     parser.add_argument("--wandb-entity")
-    parser.add_argument("--run-name", default="fineweb-234m")
+    parser.add_argument("--run-name", default="tinystories-234m")
     args = parser.parse_args()
-    for name in ("batch_size", "gradient_accumulation", "epochs", "eval_every", "eval_batches", "save_every", "log_every"):
+    for name in ("batch_size", "gradient_accumulation", "epochs", "eval_every", "save_every", "log_every"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
     if args.max_steps is not None and args.max_steps <= 0:
@@ -159,7 +158,7 @@ def main():
             if saved[name] != state[name]:
                 raise ValueError(f"Resume mismatch: {name}")
         for name in ("batch_size", "gradient_accumulation", "seed", "epochs", "learning_rate", "warmup_ratio",
-                     "min_lr_ratio", "weight_decay", "grad_clip", "precision", "eval_batches"):
+                     "min_lr_ratio", "weight_decay", "grad_clip", "precision"):
             if saved["train_config"][name] != train_config[name]:
                 raise ValueError(f"Resume mismatch: {name}")
         model.load_state_dict(saved["model"])
@@ -221,7 +220,7 @@ def main():
                      **{f"{prefix}/{key}": value for key, value in result.items() if isinstance(value, (float, int))}})
 
     def validation():
-        result = evaluate(model, val_data, device, args.batch_size, args.precision, args.eval_batches)
+        result = evaluate(model, val_data, device, args.batch_size, args.precision)
         record("validation", result)
         if rank == 0:
             tqdm.write(f"step {state['step']}: val loss={result['loss']:.4f}, PPL={result['ppl']:.2f}, BPB={result['bpb']:.4f}")
@@ -303,7 +302,7 @@ def main():
                 save_checkpoint(args.output_dir / "last.pt", model, optimizer, state, device, improved)
     progress.close()
 
-    # Select by the fixed periodic subset, then report the selected checkpoint on ALL validation blocks.
+    # Select and report the best checkpoint using the complete validation split.
     best = torch.load(args.output_dir / "best.pt", map_location="cpu", weights_only=False)
     model.load_state_dict(best["model"])
     best_step = best["step"]

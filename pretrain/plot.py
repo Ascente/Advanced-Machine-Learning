@@ -14,7 +14,7 @@ def plot_metrics(metrics_path, output_dir):
     rows = [json.loads(line) for line in Path(metrics_path).read_text().splitlines() if line.strip()]
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     for axis, metric, label in zip(axes, ("loss", "ppl", "bpb"), ("Cross-entropy loss", "Perplexity", "Bits per byte")):
-        for split, name in (("train", "Train (training batches)"), ("validation", "Validation (fixed subset)")):
+        for split, name in (("train", "Train (training batches)"), ("validation", "Validation (full split)")):
             selected = [row for row in rows if row["split"] == split and not row.get("final")]
             if selected:
                 axis.plot([row["tokens_seen"] for row in selected], [row[metric] for row in selected], label=name)

@@ -1,4 +1,4 @@
-"""Encode FineWeb once, using the same seeded 99:1 document split as Part 1."""
+"""Encode local TinyStories or FineWeb documents into packed token streams."""
 
 import argparse
 import json
@@ -77,8 +77,9 @@ class TokenWriter:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("/user-data/chaojh26/FineWeb-Edu/sample-10BT"))
-    parser.add_argument("--output-dir", type=Path, default=Path("/user-data/chaojh26/FineWeb-Edu/packed-1024"))
+    parser.add_argument("--dataset", choices=["tinystories", "fineweb"], default="tinystories")
+    parser.add_argument("--data-dir", type=Path, default=Path("/user-data/chaojh26/TinyStories"))
+    parser.add_argument("--output-dir", type=Path, default=Path("/user-data/chaojh26/TinyStories/packed-1024"))
     parser.add_argument("--tokenizer", default="flexitok/bpe_fw_edu_16000")
     parser.add_argument("--context-length", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=42)
@@ -86,11 +87,20 @@ def main():
     args = parser.parse_args()
     if args.context_length < 1 or args.batch_size < 1:
         parser.error("context-length and batch-size must be positive")
-    files = sorted(args.data_dir.glob("*.parquet"))
-    if not files:
-        raise FileNotFoundError(f"No Parquet files in {args.data_dir}")
+    if args.dataset == "tinystories":
+        file_splits = []
+        for split in ("train", "validation"):
+            paths = sorted((args.data_dir / "data").glob(f"{split}-*.parquet"))
+            if not paths:
+                raise FileNotFoundError(f"No TinyStories {split} files in {args.data_dir / 'data'}")
+            file_splits.extend((path, split) for path in paths)
+    else:
+        file_splits = [(path, None) for path in sorted(args.data_dir.glob("*.parquet"))]
+        if not file_splits:
+            raise FileNotFoundError(f"No Parquet files in {args.data_dir}")
+    files = [path for path, _ in file_splits]
     total = sum(pq.ParquetFile(path).metadata.num_rows for path in files)
-    if total < 100:
+    if args.dataset == "fineweb" and total < 100:
         raise ValueError("At least 100 documents are needed for the 99:1 split")
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise FileExistsError(f"Use an empty output directory: {args.output_dir}")
@@ -106,29 +116,32 @@ def main():
     if None in (bos, eos, pad) or len({bos, eos, pad}) != 3 or tokenizer.get_vocab_size() > 65536:
         raise ValueError("Expected distinct BOS/EOS/PAD and a vocabulary fitting uint16")
     tokenizer.save(str(args.output_dir / "tokenizer.json"))
-    validation_indices = set(random.Random(args.seed).sample(range(total), total // 100))
+    validation_indices = (set(random.Random(args.seed).sample(range(total), total // 100))
+                          if args.dataset == "fineweb" else set())
     writers = {split: TokenWriter(args.output_dir, split, args.context_length, bos, eos)
                for split in ("train", "validation")}
     offset = 0
-    with tqdm(total=total, desc="Encode FineWeb", unit="doc") as progress:
-        for path in files:
+    with tqdm(total=total, desc=f"Encode {args.dataset}", unit="doc") as progress:
+        for path, official_split in file_splits:
             for batch in pq.ParquetFile(path).iter_batches(batch_size=args.batch_size, columns=["text"]):
                 texts = batch.column(0).to_pylist()
                 if not all(isinstance(text, str) for text in texts):
                     raise TypeError(f"Non-string document in {path}")
                 encodings = tokenizer.encode_batch(texts, add_special_tokens=False)
                 for index, (text, encoding) in enumerate(zip(texts, encodings), offset):
-                    split = "validation" if index in validation_indices else "train"
+                    split = official_split or ("validation" if index in validation_indices else "train")
                     writers[split].append(text, encoding)
                 offset += len(texts)
                 progress.update(len(texts))
 
     metadata = {
-        "dataset": "FineWeb-Edu sample-10BT", "data_dir": str(args.data_dir.resolve()),
-        "files": [p.name for p in files], "tokenizer": args.tokenizer,
+        "dataset": "TinyStories" if args.dataset == "tinystories" else "FineWeb-Edu sample-10BT",
+        "data_dir": str(args.data_dir.resolve()),
+        "files": [str(p.relative_to(args.data_dir)) for p in files], "tokenizer": args.tokenizer,
         "vocab_size": tokenizer.get_vocab_size(), "bos_token_id": bos, "eos_token_id": eos, "pad_token_id": pad,
-        "context_length": args.context_length, "seed": args.seed,
-        "split_policy": "random.Random(seed).sample(range(total_documents), total_documents // 100)",
+        "context_length": args.context_length, "seed": args.seed if args.dataset == "fineweb" else None,
+        "split_policy": ("official" if args.dataset == "tinystories" else
+                         "random.Random(seed).sample(range(total_documents), total_documents // 100)"),
         "encoding_policy": "Concatenate BOS + text + EOS per document; causal attention restricted to each document; ignore BOS/PAD targets",
         "byte_policy": "All original UTF-8 text bytes attributed by tokenizer offsets; BOS/EOS/PAD have zero bytes",
         "splits": {split: writer.finish() for split, writer in writers.items()},

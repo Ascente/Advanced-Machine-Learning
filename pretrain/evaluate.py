@@ -25,10 +25,10 @@ def metrics_from_totals(loss_sum, tokens, raw_bytes):
 
 
 @torch.no_grad()
-def evaluate(model, dataset, device, batch_size=8, precision="bf16", max_batches=None):
+def evaluate(model, dataset, device, batch_size=8, precision="bf16"):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    limit = len(dataset) if max_batches is None else min(len(dataset), max_batches * batch_size)
+    limit = len(dataset)
     loader = DataLoader(Subset(dataset, range(rank, limit, world_size)), batch_size=batch_size,
                         pin_memory=device.type == "cuda")
     totals = torch.zeros(3, dtype=torch.float64, device=device)
