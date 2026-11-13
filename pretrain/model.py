@@ -74,7 +74,7 @@ class CausalSelfAttention(nn.Module):
         self.out_proj = nn.Linear(config.d_model, config.d_model, bias=False)
         self.rope = RotaryEmbedding(config.head_dim, config.rope_theta)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
         batch, length, width = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q, k, v = [t.view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
@@ -83,8 +83,9 @@ class CausalSelfAttention(nn.Module):
 
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         # True above the diagonal: position i must not attend to positions j > i.
-        mask = torch.ones(length, length, device=x.device, dtype=torch.bool).triu(1)
-        scores = scores.masked_fill(mask, float("-inf"))
+        if attention_mask is None:
+            attention_mask = torch.ones(length, length, device=x.device, dtype=torch.bool).triu(1)
+        scores = scores.masked_fill(attention_mask, float("-inf"))
         weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(dtype=v.dtype)
         attended = (weights @ v).transpose(1, 2).contiguous().view(batch, length, width)
         return self.out_proj(attended)
@@ -108,8 +109,8 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.d_model, config.norm_eps)
         self.ffn = FeedForward(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.attn_norm(x))
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        x = x + self.attn(self.attn_norm(x), attention_mask)
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
@@ -121,7 +122,6 @@ class TransformerLM(nn.Module):
         self.token_embedding = nn.Embedding(self.config.vocab_size, self.config.d_model)
         self.blocks = nn.ModuleList([TransformerBlock(self.config) for _ in range(self.config.n_layers)])
         self.final_norm = RMSNorm(self.config.d_model, self.config.norm_eps)
-        # Independent parameters: do not tie this weight to token_embedding.weight.
         self.lm_head = nn.Linear(self.config.d_model, self.config.vocab_size, bias=False)
         self.apply(self._init_weights)
         # Each block adds two residual branches; reduce their initial output scale.
@@ -135,13 +135,21 @@ class TransformerLM(nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, document_ids: torch.Tensor | None = None) -> torch.Tensor:
         """Return logits [batch, length, vocab_size]; position t predicts token t+1."""
         if input_ids.ndim != 2 or not 1 <= input_ids.size(1) <= self.config.context_length:
             raise ValueError(f"input_ids must have shape [batch, length] with 1 <= length <= {self.config.context_length}")
+        length = input_ids.size(1)
+        attention_mask = torch.ones(length, length, device=input_ids.device, dtype=torch.bool).triu(1)
+        if document_ids is not None:
+            if document_ids.shape != input_ids.shape:
+                raise ValueError("document_ids must have the same shape as input_ids")
+            # A position can attend only to earlier positions in the same document.
+            different_document = document_ids[:, None, :, None] != document_ids[:, None, None, :]
+            attention_mask = attention_mask[None, None] | different_document
         x = self.token_embedding(input_ids)
         for block in self.blocks:
-            x = block(x)
+            x = block(x, attention_mask)
         return self.lm_head(self.final_norm(x))
 
     @torch.inference_mode()
@@ -152,6 +160,7 @@ class TransformerLM(nn.Module):
         temperature: float = 1.0,
         top_k: int | None = None,
         eos_token_id: int | None = None,
+        pad_token_id: int | None = None,
     ) -> torch.Tensor:
         """Return prompt plus sampled tokens; temperature=0 selects greedy decoding."""
         if input_ids.ndim != 2 or input_ids.size(0) == 0 or input_ids.size(1) == 0:
@@ -162,6 +171,10 @@ class TransformerLM(nn.Module):
             raise ValueError("top_k must be positive")
         if eos_token_id is not None and not 0 <= eos_token_id < self.config.vocab_size:
             raise ValueError("eos_token_id must be inside the vocabulary")
+        if pad_token_id is not None and not 0 <= pad_token_id < self.config.vocab_size:
+            raise ValueError("pad_token_id must be inside the vocabulary")
+        if eos_token_id is not None and (pad_token_id is None or pad_token_id == eos_token_id):
+            raise ValueError("EOS stopping requires a separate pad_token_id")
 
         was_training = self.training
         self.eval()
@@ -170,6 +183,8 @@ class TransformerLM(nn.Module):
             for _ in range(max_new_tokens):
                 context = input_ids[:, -self.config.context_length:]
                 logits = self(context)[:, -1, :].float()
+                if pad_token_id is not None:
+                    logits[:, pad_token_id] = float("-inf")
                 if temperature == 0:
                     next_token = logits.argmax(dim=-1, keepdim=True)
                 else:
@@ -179,8 +194,8 @@ class TransformerLM(nn.Module):
                         logits = torch.full_like(logits, float("-inf")).scatter(-1, indices, values)
                     next_token = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
                 if eos_token_id is not None:
-                    # Keep a rectangular batch by repeating EOS for already finished rows.
-                    next_token = next_token.masked_fill(finished[:, None], eos_token_id)
+                    # Preserve the first EOS; pad already finished rows to keep the batch rectangular.
+                    next_token = next_token.masked_fill(finished[:, None], pad_token_id)
                     finished = finished | (next_token[:, 0] == eos_token_id)
                 input_ids = torch.cat((input_ids, next_token), dim=1)
                 if eos_token_id is not None and finished.all():
