@@ -1,0 +1,88 @@
+{
+  "dataset": "fineweb",
+  "data_dir": "/user-data/chaojh26/FineWeb-Edu/sample-10BT",
+  "data_files": [
+    {
+      "path": "000_00000.parquet",
+      "num_rows": 726000
+    },
+    {
+      "path": "001_00000.parquet",
+      "num_rows": 729000
+    },
+    {
+      "path": "002_00000.parquet",
+      "num_rows": 727000
+    },
+    {
+      "path": "003_00000.parquet",
+      "num_rows": 734000
+    },
+    {
+      "path": "004_00000.parquet",
+      "num_rows": 745000
+    },
+    {
+      "path": "005_00000.parquet",
+      "num_rows": 738000
+    },
+    {
+      "path": "006_00000.parquet",
+      "num_rows": 732000
+    },
+    {
+      "path": "007_00000.parquet",
+      "num_rows": 725000
+    },
+    {
+      "path": "008_00000.parquet",
+      "num_rows": 724000
+    },
+    {
+      "path": "009_00000.parquet",
+      "num_rows": 713000
+    },
+    {
+      "path": "010_00000.parquet",
+      "num_rows": 730000
+    },
+    {
+      "path": "011_00000.parquet",
+      "num_rows": 735000
+    },
+    {
+      "path": "012_00000.parquet",
+      "num_rows": 732000
+    },
+    {
+      "path": "013_00000.parquet",
+      "num_rows": 182101
+    }
+  ],
+  "split": "train",
+  "split_policy": {
+    "method": "random_document_indices",
+    "seed": 42,
+    "validation_ratio": 0.01,
+    "train_documents": 9575380,
+    "validation_documents": 96721
+  },
+  "tokenizer": {
+    "source": "tinystories-bpe-16000",
+    "vocab_size": 16000
+  },
+  "expected_documents": 9575380,
+  "documents": 9575380,
+  "utf8_bytes": 45514891395,
+  "unicode_characters": 45278944139,
+  "tokens": 13202393853,
+  "matched_documents": 9575380,
+  "bytes_per_token": 3.4474726251752883,
+  "characters_per_token": 3.429601074104542,
+  "mismatched_documents": 0,
+  "match_rate": 1.0,
+  "normalized_matched_documents": 9575380,
+  "workers": 16,
+  "elapsed_seconds": 3702.805667243898,
+  "created_at_utc": "2026-11-14T13:36:39.311305+00:00"
+}

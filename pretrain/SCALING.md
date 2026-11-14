@@ -45,6 +45,9 @@ tail -f pretrain/scaling.log
 tail -f /user-data/chaojh26/pretrain/scaling/tinystories-1/s01/train.log
 ```
 
+队列使用 `--wandb-mode online`，训练指标实时上传 W&B，同时保存本地记录。
+在线访问失败时停止队列，不自动切换到离线模式。已完成的 s01～s04 在线实验保留原记录。
+
 脚本跳过已生成 `final_metrics.json` 的模型，遇到失败会停止队列。
 中断但未完成的模型保留现有训练入口的覆盖保护，需要单独使用原配置加 `--resume` 恢复，
 或为新实验选择新的输出目录。
