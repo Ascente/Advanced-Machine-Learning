@@ -1,5 +1,7 @@
 # Transformer 语言模型
 
+八种小模型的 Scaling Law 实验配置与启动方法见 [SCALING.md](SCALING.md)。
+
 `model.py` 实现 decoder-only Transformer。
 
 ## 模型配置
